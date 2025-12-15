@@ -1,0 +1,6 @@
+{
+  "/doctor/dashboard/page": "app/doctor/dashboard/page.js",
+  "/doctor/pre-diagnosis-validation/[id]/page": "app/doctor/pre-diagnosis-validation/[id]/page.js",
+  "/login/page": "app/login/page.js",
+  "/patient/symptoms/page": "app/patient/symptoms/page.js"
+}
