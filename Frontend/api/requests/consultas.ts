@@ -256,6 +256,7 @@ export const getValidatedReportDetailsRequest = async (token: string, id: string
         throw e;
     }
 };
+
 export const consultaMarkAsDone = async (token: string, id: string) => {
     try {
         const response = await fetch(endpoint.consultaMarkAsDone(id), {
@@ -377,4 +378,20 @@ export const getConsultaRecommendationsRequest = async (
         console.error("Erro ao obter recomendações da consulta", e);
         throw e;
     }
+};
+
+export const getConsultaPacienteRequest = async (id: string, token: string) => {
+  try {
+    const response = await fetch(endpoint.consultaById(id), {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    return response;
+  } catch (e) {
+    console.error("Erro ao obter consulta para paciente", e);
+    throw e;
+  }
 };

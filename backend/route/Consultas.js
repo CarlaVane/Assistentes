@@ -44,4 +44,8 @@ router.post('/:id/diagnose', authenticate, requireMedico, validateObjectId('id')
 router.put('/:id/validate-diagnosis', authenticate, requireMedico, validateObjectId('id'), controllers.ConsultasController.validateDiagnosis);
 
 router.post("/post-consulta-com-sintomas", authenticate, requirePaciente, controllers.ConsultasController.make_consulta);
+
+
+router.get('/paciente/:id', authenticate, requirePaciente, controllers.ConsultasController.getConsultaForPaciente);
+
 module.exports = router;

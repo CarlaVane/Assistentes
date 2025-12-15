@@ -1053,5 +1053,224 @@ async function validateDiagnosis(req, res, next) {
     }
     }
 
+async function getConsultaForPaciente(req, res, next) {
+    try {
+        const { id } = req.params;
+        const pacienteId = req.user.paciente?._id || req.user.paciente;
+        
+        console.log('🔍 Buscando consulta para paciente:', {
+            consultaId: id,
+            pacienteId: pacienteId,
+            userId: req.user.id
+        });
 
-module.exports = { create, list, get, update, remove, approve, cancel, markAsDone, diagnose, getValidatedReports, getConsultaDetails, getPendingConsultas, make_consulta, validateDiagnosis };
+        if (!pacienteId) {
+            return res.status(403).json({ 
+                success: false,
+                message: 'Acesso restrito a pacientes' 
+            });
+        }
+
+        // PRIMEIRO: Tentar buscar sem populate nas recomendações
+        let consulta;
+        try {
+            consulta = await Consultas.findOne({
+                _id: id,
+                paciente: pacienteId
+            })
+            .populate('paciente', 'nome documento data_nascimento altura peso')
+            .populate('medico', 'user')
+            .populate('doenca', 'nome descricao')
+            .lean();
+        } catch (populateErr) {
+            console.warn('⚠️ Erro no populate, tentando sem populate...', populateErr.message);
+            
+            // Tentar sem populate
+            consulta = await Consultas.findOne({
+                _id: id,
+                paciente: pacienteId
+            }).lean();
+        }
+
+        if (!consulta) {
+            return res.status(404).json({ 
+                success: false,
+                message: 'Consulta não encontrada ou você não tem permissão para acessá-la' 
+            });
+        }
+
+        // Buscar sintomas associados à consulta
+        let symptoms = [];
+        try {
+            const consultaSintomas = await ConsultasSintomas.find({
+                consulta: consulta._id
+            }).populate('sintoma', 'nome').lean();
+
+            symptoms = consultaSintomas.map(cs => cs.sintoma?.nome).filter(Boolean);
+        } catch (sintomasErr) {
+            console.warn('⚠️ Erro ao buscar sintomas:', sintomasErr.message);
+        }
+
+        // Buscar nome do médico
+        let medicoInfo = null;
+        if (consulta.medico) {
+            try {
+                let medicoUserId;
+                
+                // Se medico já é um objeto populado
+                if (consulta.medico.user) {
+                    medicoUserId = consulta.medico.user;
+                } 
+                // Se medico é apenas um ID
+                else if (typeof consulta.medico === 'string' || consulta.medico._id) {
+                    const medicoDoc = await Medicos.findById(consulta.medico).select('user').lean();
+                    if (medicoDoc) {
+                        medicoUserId = medicoDoc.user;
+                    }
+                }
+                
+                if (medicoUserId) {
+                    const medicoUser = await Users.findById(medicoUserId).select('nome email').lean();
+                    if (medicoUser) {
+                        medicoInfo = {
+                            nome: medicoUser.nome,
+                            email: medicoUser.email
+                        };
+                    }
+                }
+            } catch (medicoErr) {
+                console.warn('⚠️ Erro ao buscar médico:', medicoErr.message);
+            }
+        }
+
+        // Buscar recomendações médicas (se IDs existirem)
+        let recomendacoesMedicas = [];
+        if (consulta.recomendacoes_medicos && consulta.recomendacoes_medicos.length > 0) {
+            try {
+                // Tentar buscar as recomendações
+                const Recomendacoes = require('../model/Recomendacoes');
+                const recomendacoesDocs = await Recomendacoes.find({
+                    _id: { $in: consulta.recomendacoes_medicos }
+                }).select('descricao').lean();
+                
+                recomendacoesMedicas = recomendacoesDocs.map(r => r.descricao);
+            } catch (recomendacaoErr) {
+                console.warn('⚠️ Erro ao buscar recomendações médicas:', recomendacaoErr.message);
+                // Usar IDs como fallback
+                recomendacoesMedicas = consulta.recomendacoes_medicos.map(id => 
+                    `Recomendação ID: ${id.toString().slice(-6)}`
+                );
+            }
+        }
+
+        // Formatar dados para o paciente
+        const consultaFormatada = {
+            id: consulta._id.toString(),
+            // Informações básicas
+            paciente: consulta.paciente ? {
+                nome: consulta.paciente.nome || 'Paciente',
+                documento: consulta.paciente.documento || '',
+                dataNascimento: consulta.paciente.data_nascimento || null,
+                altura: consulta.paciente.altura || null,
+                peso: consulta.paciente.peso || null
+            } : { nome: 'Paciente' },
+            medico: medicoInfo,
+            // Datas
+            dataHora: consulta.data_hora,
+            dataCriacao: consulta.createdAt,
+            dataAtualizacao: consulta.updatedAt,
+            // Sintomas
+            symptoms: symptoms.length > 0 ? symptoms : ['Nenhum sintoma registrado'],
+            // Diagnóstico e resultados
+            status: consulta.status,
+            doenca: consulta.doenca ? {
+                nome: consulta.doenca.nome,
+                descricao: consulta.doenca.descricao
+            } : null,
+            resultado: consulta.resultado,
+            diagnostico: consulta.diagnostico_final || consulta.notas || consulta.resultado,
+            // Recomendações
+            recomendacoes_medicos: recomendacoesMedicas,
+            recomendacoes_livres: consulta.recomendacoes_livres || [],
+            // Notas adicionais
+            notas: consulta.notas,
+            // Auto-diagnóstico (se disponível)
+            diagnostico_auto: consulta.diagnostico_auto
+        };
+
+        // Filtrar campos nulos/vazios
+        Object.keys(consultaFormatada).forEach(key => {
+            const value = consultaFormatada[key];
+            if (value === null || value === undefined || 
+                (Array.isArray(value) && value.length === 0) ||
+                (typeof value === 'object' && Object.keys(value).length === 0 && !(value instanceof Date))) {
+                delete consultaFormatada[key];
+            }
+        });
+
+        console.log('✅ Consulta formatada para paciente:', {
+            id: consultaFormatada.id,
+            status: consultaFormatada.status,
+            hasDiagnostico: !!consultaFormatada.diagnostico,
+            hasRecomendacoes: (consultaFormatada.recomendacoes_medicos?.length || 0) + (consultaFormatada.recomendacoes_livres?.length || 0) > 0
+        });
+
+        return res.status(200).json({
+            success: true,
+            data: consultaFormatada,
+            message: 'Consulta obtida com sucesso'
+        });
+
+    } catch (err) {
+        console.error('❌ Erro em getConsultaForPaciente:', err);
+        
+        // Se for o erro específico do modelo Recomendacao
+        if (err.message && err.message.includes('Recomendacao')) {
+            console.log('🔧 Tentando abordagem alternativa...');
+            
+            try {
+                // Buscar apenas dados básicos
+                const { id } = req.params;
+                const pacienteId = req.user.paciente?._id;
+                
+                const consultaBasica = await Consultas.findOne({
+                    _id: id,
+                    paciente: pacienteId
+                })
+                .select('status diagnostico_final notas resultado recomendacoes_livres data_hora')
+                .lean();
+                
+                if (!consultaBasica) {
+                    return res.status(404).json({ 
+                        success: false,
+                        message: 'Consulta não encontrada' 
+                    });
+                }
+                
+                const response = {
+                    id: id,
+                    status: consultaBasica.status,
+                    diagnostico: consultaBasica.diagnostico_final || consultaBasica.notas || consultaBasica.resultado,
+                    recomendacoes_livres: consultaBasica.recomendacoes_livres || [],
+                    dataHora: consultaBasica.data_hora
+                };
+                
+                return res.status(200).json({
+                    success: true,
+                    data: response,
+                    message: 'Consulta obtida com sucesso'
+                });
+                
+            } catch (simpleErr) {
+                console.error('❌ Erro na abordagem simplificada:', simpleErr);
+            }
+        }
+        
+        return res.status(500).json({
+            success: false,
+            message: 'Erro ao buscar consulta',
+            error: process.env.NODE_ENV === 'development' ? err.message : undefined
+        });
+    }
+}
+module.exports = { create, list, get, update, remove, approve, cancel, markAsDone, diagnose, getValidatedReports, getConsultaDetails, getPendingConsultas, make_consulta, validateDiagnosis, getConsultaForPaciente };
