@@ -10,13 +10,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Clock, FileText, Heart, User, LogOut, Loader2, CheckCircle2, AlertCircle, Stethoscope } from "lucide-react";
-import { getPendingConsultasRequest, approveConsultaRequest, updateConsultaRequest } from "@/api/requests/consultas";
+import { getPendingConsultasRequest, approveConsultaRequest } from "@/api/requests/consultas";
 import { getDoencaRequest } from "@/api/requests/doenca";
 import { getSintomaRequest } from "@/api/requests/sintomas";
-import { listConsultaSintomasRequest } from "@/api/requests/consultaSintomas";
 import { Checkbox } from "@/components/ui/checkbox";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { UserDropdown } from "@/components/user-dropdown";
+import { validateDiagnosisRequest, type DiagnosisValidationData } from "@/api/requests/validationRequests";
 
 // Tipagens das estruturas de dados
 interface Diagnostico {
@@ -123,6 +123,7 @@ export function DoctorPreDiagnosisValidation(): JSX.Element {
       }
     } catch { }
   }, []);
+
   // Buscar recomendações quando doença for selecionada ou relatório mudar
   useEffect(() => {
     const fetchRecomendacoes = async () => {
@@ -218,33 +219,71 @@ export function DoctorPreDiagnosisValidation(): JSX.Element {
         router.push("/login");
         return;
       }
+      // Na função handleValidate, no início:
+console.log("🔍 selectedDoencaId:", selectedDoencaId);
+console.log("🔍 Tipo:", typeof selectedDoencaId);
+console.log("🔍 Diagnosticos disponíveis:", selectedReport?.diagnosticos);
 
-      // Preparar dados para atualização
-      const updateData: any = {
-        doenca: selectedDoencaId
+      // Buscar nome da doença para enriquecer o diagnóstico
+      let doencaNome = "";
+      if (selectedReport.diagnosticos) {
+        const diagnostico = selectedReport.diagnosticos.find(
+          d => d._id === selectedDoencaId || d.doenca.toLowerCase().includes(selectedDoencaId.toLowerCase())
+        );
+        if (diagnostico) {
+          doencaNome = diagnostico.doenca;
+        }
+      }
+
+      // Preparar dados para validação no formato correto
+      const validationData: DiagnosisValidationData = {
+        doenca: selectedDoencaId, // Campo OBRIGATÓRIO
+        
+        // Campos OPCIONAIS:
+        recomendacoes_medicos: selectedRecomendacoes.length > 0 
+          ? selectedRecomendacoes 
+          : undefined,
+        
+        notas: validationNotes.trim() || undefined,
+        
+        diagnostico_final: doencaNome 
+          ? `Diagnóstico confirmado: ${doencaNome}. ${validationNotes.trim() ? `Observações: ${validationNotes.trim()}` : ''}`
+          : undefined,
+        
+        recomendacoes_livres: validationNotes.trim() 
+          ? [`Observações do médico: ${validationNotes.trim()}`] 
+          : undefined,
+
+        confiancaDiagnostico: 'alta' // Padrão alta, pode ser ajustado
       };
 
-      // Adicionar recomendações selecionadas
-      if (selectedRecomendacoes.length > 0) {
-        updateData.recomendacoes_medicos = selectedRecomendacoes;
+      console.log("🔄 Enviando para validação:", validationData);
+
+      // Usar o endpoint específico de validação
+      const response = await validateDiagnosisRequest(
+        selectedReport.id, 
+        token, 
+        validationData
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("❌ Erro na resposta:", errorText);
+        
+        let errorMessage = "Erro ao validar diagnóstico";
+        try {
+          const errorData = JSON.parse(errorText);
+          errorMessage = errorData.message || errorMessage;
+        } catch (e) {
+          // Se não for JSON, usar o texto puro
+          errorMessage = errorText || errorMessage;
+        }
+        
+        throw new Error(errorMessage);
       }
 
-      // Adicionar notas se houver
-      if (validationNotes.trim()) {
-        updateData.recomendacoes_livres = [validationNotes.trim()];
-      }
-
-      // Atualizar consulta com doença e recomendações
-      const updateResponse = await updateConsultaRequest(selectedReport.id, token, updateData);
-      if (!updateResponse.ok) {
-        throw new Error("Erro ao atualizar consulta");
-      }
-
-      // Aprovar a consulta
-      const approveResponse = await approveConsultaRequest(selectedReport.id, token);
-      if (!approveResponse.ok) {
-        throw new Error("Erro ao aprovar consulta");
-      }
+      const result = await response.json();
+      console.log("✅ Diagnóstico validado:", result);
 
       // Remover da lista e selecionar próxima
       const updated = pendingPreDiagnoses.filter(p => p.id !== selectedReport.id);
@@ -254,9 +293,15 @@ export function DoctorPreDiagnosisValidation(): JSX.Element {
       setSelectedDoencaId(null);
       setSelectedRecomendacoes([]);
 
-      alert("Pré-diagnóstico validado com sucesso!");
-      router.push("/doctor/dashboard");
+      alert(result.message || "Diagnóstico validado com sucesso!");
+      
+      // Opcional: redirecionar se não houver mais pendentes
+      if (updated.length === 0) {
+        router.push("/doctor/dashboard");
+      }
+
     } catch (err: any) {
+      console.error("❌ Erro na validação:", err);
       alert(`Erro ao validar: ${err.message}`);
     } finally {
       setIsValidating(false);
@@ -268,7 +313,7 @@ export function DoctorPreDiagnosisValidation(): JSX.Element {
   };
 
   return (
-    <div className="min-h-screen  p-4 md:p-8">
+    <div className="min-h-screen p-4 md:p-8">
       <div className="container max-w-6xl mx-auto">
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-2">
@@ -311,7 +356,7 @@ export function DoctorPreDiagnosisValidation(): JSX.Element {
           <div className="lg:col-span-1">
             <Card className="shadow-lg border-0">
               <CardHeader className="bg-linear-to-r border-b">
-                <CardTitle className="text-lg"> Para Validar </CardTitle>
+                <CardTitle className="text-lg">Para Validar</CardTitle>
               </CardHeader>
               <CardContent className="pt-4 space-y-2">
                 {loading ? (
@@ -406,7 +451,6 @@ export function DoctorPreDiagnosisValidation(): JSX.Element {
                       </div>
                     </CardContent>
                   </Card>
-
                 </TabsContent>
 
                 {/* Aba Condições */}

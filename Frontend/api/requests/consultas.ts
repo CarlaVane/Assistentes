@@ -354,32 +354,6 @@ export const makeConsultaRequest = async (
         throw e;
     }
 };
-/**
- * Validar diagnóstico e atualizar doença e recomendações (requer autenticação de médico)
- * @param id - ID da consulta
- * @param token - Token de autenticação
- * @param data - Dados contendo doenca e recomendacoes_medicos
- */
-export const validateDiagnosisRequest = async (
-    id: string,
-    token: string,
-    data: { doenca?: string; recomendacoes_medicos?: string[] }
-) => {
-    try {
-        const response = await fetch(endpoint.ConsultaValidateDiagnosis(id), {
-            method: "PUT",
-            headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify(data),
-        });
-        return response;
-    } catch (e) {
-        console.error("Erro ao validar diagnóstico", e);
-        throw e;
-    }
-};
 
 /**
  * Obter recomendações de sintomas e doença de uma consulta (requer autenticação de médico)

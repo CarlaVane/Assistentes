@@ -405,16 +405,21 @@ async function getConsultaDetails(req, res, next) {
 
 async function getPendingConsultas(req, res, next) {
   try {
+    console.log("🟢 getPendingConsultas - Iniciando busca de consultas pendentes");
+
     /* =====================================================
      * 1️⃣ Buscar consultas pendentes (LIMITADO)
      * ===================================================== */
-    const consultas = await Consultas.find({ status: 'preliminar' })
+    const consultasList = await Consultas.find({ status: 'preliminar' })
       .limit(10)
       .populate('paciente', 'nome documento')
       .lean();
 
-    if (!consultas.length) {
+    console.log(`📊 Consultas pendentes encontradas: ${consultasList.length}`);
+
+    if (!consultasList.length) {
       return res.status(200).json({
+        success: true,
         data: [],
         message: 'Nenhuma consulta pendente encontrada'
       });
@@ -425,13 +430,15 @@ async function getPendingConsultas(req, res, next) {
      * ===================================================== */
     const allSymptomIds = new Set();
 
-    consultas.forEach(c => {
+    consultasList.forEach(c => {
       (c.sintomas || []).forEach(id => {
         if (ObjectId.isValid(id)) {
           allSymptomIds.add(id.toString());
         }
       });
     });
+
+    console.log(`🔍 Sintomas únicos encontrados: ${allSymptomIds.size}`);
 
     const symptomObjectIds = [...allSymptomIds].map(id => new ObjectId(id));
 
@@ -450,11 +457,13 @@ async function getPendingConsultas(req, res, next) {
     });
 
     /* =====================================================
-     * 4️⃣ Buscar TODAS as doenças (UMA VEZ)
+     * 4️⃣ Buscar TODAS as doenças (UMA VEZ) com IDs REAIS
      * ===================================================== */
     const doencas = await Doencas.find()
-      .select('nome sintomas')
+      .select('nome sintomas _id')
       .lean();
+
+    console.log(`📚 Doenças no sistema: ${doencas.length}`);
 
     /* =====================================================
      * 5️⃣ Pré-processar doenças (converter sintomas)
@@ -465,7 +474,7 @@ async function getPendingConsultas(req, res, next) {
         .map(id => id.toString());
 
       return {
-        _id: d._id,
+        _id: d._id.toString(), // ID REAL da doença
         nome: d.nome,
         sintomasIds,
         sintomasNomes: sintomasIds.map(id => sintomasMap[id]).filter(Boolean)
@@ -475,7 +484,7 @@ async function getPendingConsultas(req, res, next) {
     /* =====================================================
      * 6️⃣ Processar consultas (SEM QUERIES)
      * ===================================================== */
-    const pending = consultas.map(consulta => {
+    const pending = consultasList.map(consulta => {
       const sintomasConsultaIds = (consulta.sintomas || [])
         .filter(id => ObjectId.isValid(id))
         .map(id => id.toString());
@@ -484,6 +493,7 @@ async function getPendingConsultas(req, res, next) {
         .map(id => sintomasMap[id])
         .filter(Boolean);
 
+      // Calcular diagnósticos possíveis
       const diagnosticos = doencasProcessadas
         .map(d => {
           const comuns = d.sintomasIds.filter(id =>
@@ -497,6 +507,8 @@ async function getPendingConsultas(req, res, next) {
           );
 
           return {
+            _id: d._id, // ← ID REAL da doença
+            doencaId: d._id, // ← Campo adicional para clareza
             doenca: d.nome,
             porcentagem,
             sintomasDoenca: d.sintomasNomes,
@@ -517,23 +529,32 @@ async function getPendingConsultas(req, res, next) {
         patientBI: consulta.paciente?.documento || '',
         symptoms: sintomasConsultaNomes,
         symptomIds: sintomasConsultaIds,
-        descricao: consulta.descricao_sintomas || undefined,
-        submittedDate: consulta.data_hora.toISOString().split('T')[0],
+        descricao: consulta.descricao_sintomas || consulta.resultado || undefined,
+        submittedDate: consulta.data_hora ? consulta.data_hora.toISOString().split('T')[0] : 'Data não disponível',
         status: consulta.status,
-        diagnosticos
+        diagnosticos: diagnosticos || []
       };
     });
 
     /* =====================================================
      * 7️⃣ Resposta final
      * ===================================================== */
+    console.log("✅ getPendingConsultas - Processamento concluído");
+    
     return res.status(200).json({
+      success: true,
       data: pending,
       message: 'Consultas pendentes obtidas com sucesso'
     });
 
   } catch (err) {
-    next(err);
+    console.error("❌ Erro em getPendingConsultas:", err);
+    return res.status(500).json({
+      success: false,
+      data: null,
+      message: 'Erro interno ao buscar consultas pendentes',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
   }
 }
 
@@ -924,4 +945,113 @@ async function make_consulta(req, res, next) {
         });
     }
 }
-module.exports = { create, list, get, update, remove, approve, cancel, markAsDone, diagnose, getValidatedReports, getConsultaDetails, getPendingConsultas, make_consulta };
+
+
+async function validateDiagnosis(req, res, next) {
+    try {
+        const { id } = req.params;
+        const { 
+            doenca, 
+            recomendacoes_medicos = [],
+            notas,
+            diagnostico_final,
+            recomendacoes_livres = []
+        } = req.body;
+
+        console.log('🔍 Validando diagnóstico para consulta:', id);
+        console.log('📋 Dados recebidos:', req.body);
+
+        // Validar campos obrigatórios
+        if (!doenca) {
+            return res.status(400).json({ 
+                success: false,
+                message: 'O campo "doenca" é obrigatório' 
+            });
+        }
+
+        // Buscar a consulta
+        const consulta = await Consultas.findById(id);
+        if (!consulta) {
+            return res.status(404).json({ 
+                success: false,
+                message: 'Consulta não encontrada' 
+            });
+        }
+
+        // Validar se a doença existe
+        if (!ObjectId.isValid(doenca)) {
+            return res.status(400).json({ 
+                success: false,
+                message: 'ID da doença é inválido' 
+            });
+        }
+
+        const doencaDoc = await Doencas.findById(doenca);
+        if (!doencaDoc) {
+            return res.status(404).json({ 
+                success: false,
+                message: 'Doença não encontrada' 
+            });
+        }
+
+        // Validar recomendações (se houver)
+        if (recomendacoes_medicos.length > 0) {
+            const recomendacoesValidas = await Recomendacoes.find({
+                _id: { $in: recomendacoes_medicos }
+            }).select('_id').lean();
+
+            if (recomendacoesValidas.length !== recomendacoes_medicos.length) {
+                return res.status(400).json({ 
+                    success: false,
+                    message: 'Algumas recomendações não foram encontradas' 
+                });
+            }
+        }
+
+        // Preparar dados para a função approve
+        const dadosApprove = {
+            doenca: doenca,
+            recomendacoes_medicos: recomendacoes_medicos,
+            notas: notas,
+            diagnostico_final: diagnostico_final || `Diagnóstico: ${doencaDoc.nome}`,
+            recomendacoes_livres: recomendacoes_livres
+        };
+
+        console.log('📦 Chamando função approve com dados:', dadosApprove);
+
+        // Criar um objeto request falso para passar para a função approve
+        const fakeReq = {
+            params: { id },
+            body: dadosApprove,
+            user: req.user
+        };
+
+        const fakeRes = {
+            status: function(code) {
+                this.statusCode = code;
+                return this;
+            },
+            json: function(data) {
+                return res.status(this.statusCode || 200).json(data);
+            }
+        };
+
+        // Chamar a função approve existente
+        await module.exports.approve(fakeReq, fakeRes, next);
+
+    } catch (err) {
+        console.error('❌ Erro ao validar diagnóstico:', err);
+        
+        // Se já respondeu, não responder novamente
+        if (!res.headersSent) {
+            return res.status(500).json({
+                success: false,
+                message: 'Erro ao validar diagnóstico',
+                error: process.env.NODE_ENV === 'development' ? err.message : undefined
+            });
+        }
+    }
+    }
+
+
+module.exports = { create, list, get, update, remove, approve, cancel, markAsDone, diagnose, getValidatedReports, getConsultaDetails, getPendingConsultas, make_consulta, validateDiagnosis };
