@@ -54,7 +54,7 @@ export function SymptomForm({ preloadedSymptoms }: { preloadedSymptoms?: any[] }
   const [nlpError, setNlpError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  // 🔍 filtra sintomas conforme o texto digitado
+
   const filteredSymptoms = possibleSymptoms.filter((symptom) =>
     symptom.toLowerCase().includes(searchTerm.toLowerCase())
   );
@@ -161,62 +161,69 @@ export function SymptomForm({ preloadedSymptoms }: { preloadedSymptoms?: any[] }
     );
   };
 
-  const handleSubmit = async () => {
-    if (!isFormValid) return;
-
-    setSubmitting(true);
-    setError(null);
-
+const handleSubmit = async () => {
     try {
-      const token = localStorage.getItem("token");
-      if (!token) {
-        setError("Sessão expirada. Faça login novamente.");
-        router.push("/login");
-        return;
-      }
-
-      // Mapear nomes de sintomas selecionados para IDs
-      const selectedSymptomIds: string[] = [];
-      selectedSymptoms.forEach((symptomName) => {
-        const symptom = symptomsData.find(
-          (s: any) => (s.nome || s.name || String(s)) === symptomName
-        );
-        if (symptom && symptom._id) {
-          selectedSymptomIds.push(symptom._id);
+        const token = localStorage.getItem("token");
+        
+        console.log("🔍 === handleSubmit ===");
+        
+        if (!token) {
+            setError("Token não encontrado. Faça login novamente.");
+            router.push("/login");
+            return;
         }
-      });
- console.log("IDs dos sintomas selecionados:", selectedSymptomIds);
-      // Enviar ao back-end
-      const response = await makeConsultaRequest(
-        token,
-        selectedSymptomIds,
-        description.trim() || undefined
-      );
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message || "Erro ao criar consulta");
-      }
+        setSubmitting(true);
+        setError(null);
 
-      const result = await response.json();
+        // Agora faz a consulta
+        const result = await makeConsultaRequest(
+            token,
+            [],
+            description.trim()
+        );
 
-      // NÃO salvar diagnósticos no localStorage - eles só aparecem para o médico
-      // O paciente só verá após validação médica
-      // Apenas salvar ID da consulta criada se necessário para rastreamento
-      if (result.data?.consulta?.id) {
-        // Opcional: salvar apenas o ID para referência futura
-        // Mas não os diagnósticos
-      }
-
-      // Redirecionar para página de resultados
-      router.push("/patient/results");
+        console.log("✅ Resultado recebido:", result);
+        
+        // Verificar se houve resultados
+        if (result.data && Array.isArray(result.data)) {
+            // EXTRAIR OS SINTOMAS
+            const sintomasDaConsulta = result.data.length > 0 
+                ? (result.data[0].sintomasConsulta || []) 
+                : [];
+            
+            console.log("📊 Sintomas da consulta:", sintomasDaConsulta);
+            
+            // Salvar resultados COMPLETOS no localStorage
+            const dadosParaSalvar = {
+                data: result.data,
+                metadata: result.metadata,
+                timestamp: new Date().toISOString(),
+                message: result.message,
+                consultaId: result.consultaId,
+                sintomasConsulta: sintomasDaConsulta,
+                descricaoOriginal: description.trim(),
+                qtdSintomas: sintomasDaConsulta.length
+            };
+            
+            console.log("💾 Salvando no localStorage:", dadosParaSalvar);
+            localStorage.setItem("consultaResultados", JSON.stringify(dadosParaSalvar));
+            
+            console.log("✅ Redirecionando para /patient/results");
+            router.push("/patient/results");
+        } else {
+            const errorMsg = result.message || "Nenhuma doença encontrada com os sintomas fornecidos.";
+            console.log("⚠️ Sem dados:", errorMsg);
+            setError(errorMsg);
+        }
+        
     } catch (err: any) {
-      console.error("Erro ao enviar sintomas:", err);
-      setError(err.message || "Erro ao enviar sintomas. Tente novamente.");
-      setSubmitting(false);
+        console.error("❌ Erro no handleSubmit:", err);
+        setError(err.message || "Erro ao enviar sintomas. Tente novamente.");
+    } finally {
+        setSubmitting(false);
     }
-  };
-
+};
   const handleLogout = () => {
     router.push("/login");
   };

@@ -305,27 +305,55 @@ export const makeConsultaRequest = async (
     descricao?: string
 ) => {
     try {
-        const response = await fetch(endpoint.consultaMakeConsulta, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify({
-                sintomas,
-                descricao: descricao || null,
-            }),
+        console.log("🔍 === makeConsultaRequest INICIADA ===");
+        console.log("📦 Token recebido (primeiros 50 chars):", token?.substring(0, 50) + "...");
+        console.log("📦 Token completo:", token);
+        console.log("📦 Token length:", token?.length);
+        console.log("📦 URL:", endpoint.consultaMakeConsulta);
+        console.log("📦 Sintomas:", sintomas);
+        console.log("📦 Descrição:", descricao);
+        
+        // Verificar se o token está no formato correto
+        if (!token || !token.startsWith('eyJ')) {
+            console.error("❌ Token não está no formato JWT esperado (deve começar com 'eyJ')");
+        }
+
+        const headers = {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${token}`,
+        };
+
+        console.log("📦 Headers sendo enviados:", headers);
+
+        const body = JSON.stringify({
+            bodySintomas: sintomas,
+            descricao: descricao || "",
         });
 
-        return response;
+        console.log("📦 Body sendo enviado:", body);
+
+        const response = await fetch(endpoint.consultaMakeConsulta, {
+            method: "POST",
+            headers: headers,
+            body: body,
+        });
+
+        console.log("📦 Response status:", response.status);
+        console.log("📦 Response status text:", response.statusText);
+        
+        const responseText = await response.text();
+        console.log("📦 Response body:", responseText);
+
+        if (!response.ok) {
+            throw new Error(`Erro ${response.status}: ${responseText}`);
+        }
+
+        return JSON.parse(responseText);
     } catch (e) {
-        console.error("Erro ao criar consulta com diagnóstico", e);
+        console.error("❌ Erro completo em makeConsultaRequest:", e);
         throw e;
     }
-
-    
 };
-
 /**
  * Validar diagnóstico e atualizar doença e recomendações (requer autenticação de médico)
  * @param id - ID da consulta

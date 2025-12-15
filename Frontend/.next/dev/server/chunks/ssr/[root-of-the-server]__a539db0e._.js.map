@@ -1,6 +1,0 @@
-{
-  "version": 3,
-  "sources": [],
-  "sections": [
-    {"offset": {"line": 14, "column": 0}, "map": {"version":3,"sources":["file:///C:/Users/C.%20Vanessa/Downloads/Assistentes-main/Assistentes-main/Frontend/app/doctor/pre-diagnosis-validation/%5Bid%5D/page.tsx"],"sourcesContent":["import { DoctorPreDiagnosisValidation } from \"@/components/DoctorPreDiagnosisValidation\";\n\nexport default function DoctorPreDiagnosisValidationPage() {\n  return <DoctorPreDiagnosisValidation />;\n}\n"],"names":[],"mappings":";;;;;;;;;;;;AAEe,SAAS;IACtB,qBAAO,6WAAC;;;;;AACV"}}]
-}

@@ -537,62 +537,189 @@ async function getPendingConsultas(req, res, next) {
   }
 }
 
-
-
 async function make_consulta(req, res, next) {
     try {
-        let { bodySintomas = [], descricao } = req.body;
+        console.log("🔍 === make_consulta INICIADO ===");
+        
+        // IMPORTAR OS MODELS NECESSÁRIOS
+        const Pacientes = require('../model/Pacientes');
+        const Consultas = require('../model/Consultas');
+        const ConsultasSintomas = require('../model/ConsultaSintomas');
+        const Doencas = require('../model/Doencas');
+        const llm_conect = require('../utils/LLMApiCall');
+        const { ObjectId } = require('mongoose').Types;
 
-        // =====================================================
-        // 1️⃣ Garantir array
-        // =====================================================
-        if (!Array.isArray(bodySintomas)) {
-            bodySintomas = [];
-        }
-
-        // =====================================================
-        // 2️⃣ NLP: extrair NOMES dos sintomas da descrição
-        // =====================================================
-        if (descricao && typeof descricao === "string") {
-
-            // Ex: ["Febre", "Dor de cabeça"]
-            const sintomasExtraidos = await llm_conect(descricao);
-
-            if (Array.isArray(sintomasExtraidos) && sintomasExtraidos.length > 0) {
-
-                // 🔥 CONVERSÃO REAL: NOME → ID
-                const sintomasDb = await Sintomas.find({
-                    nome: { $in: sintomasExtraidos }
-                }).select("_id");
-
-                // Unir sintomas vindos do front + NLP (sem duplicar)
-                bodySintomas = Array.from(
-                    new Set([
-                        ...bodySintomas.map(String),
-                        ...sintomasDb.map(s => s._id.toString())
-                    ])
-                );
-            }
-        }
-
-        // =====================================================
-        // 3️⃣ Validação FINAL (depois do NLP)
-        // =====================================================
-        if (!Array.isArray(bodySintomas) || bodySintomas.length === 0) {
-            return res.status(400).json({
-                message: "Não foi possível identificar sintomas a partir da descrição."
+        // 1. VERIFICAÇÃO DE AUTENTICAÇÃO E PACIENTE
+        console.log("🔄 Verificando autenticação...");
+        
+        if (!req.user || !req.user.id) {
+            console.log("❌ req.user não disponível");
+            return res.status(401).json({
+                message: "Usuário não autenticado"
             });
         }
 
-        // =====================================================
-        // 4️⃣ Converter para ObjectId
-        // =====================================================
-        const sintomasConsultaIds = bodySintomas.map(id => new ObjectId(id));
+        console.log("👤 Usuário autenticado:", {
+            id: req.user.id,
+            tipo: req.user.tipo,
+            email: req.user.email,
+            nome: req.user.nome
+        });
 
-        // =====================================================
-        // 5️⃣ Agregação para cálculo das doenças
-        // =====================================================
+        // 2. BUSCAR PACIENTE ASSOCIADO AO USUÁRIO
+        console.log("🔄 Buscando paciente para user ID:", req.user.id);
+        const paciente = await Pacientes.findOne({ user: req.user.id }).lean();
+        
+        if (!paciente) {
+            console.log("❌ Nenhum paciente encontrado para user:", req.user.id);
+            return res.status(403).json({
+                message: "Usuário não associado a um paciente. Apenas pacientes podem criar consultas."
+            });
+        }
+
+        const pacienteId = paciente._id;
+        console.log("✅ Paciente encontrado:", {
+            id: pacienteId,
+            nome: paciente.nome,
+            documento: paciente.documento
+        });
+
+        // 3. OBTER DADOS DO BODY
+        let { bodySintomas, descricao } = req.body;
+        
+        console.log("📦 Dados recebidos:", {
+            bodySintomas: bodySintomas,
+            descricao: descricao,
+            tipoBodySintomas: typeof bodySintomas,
+            éArray: Array.isArray(bodySintomas)
+        });
+
+        // 4. VALIDAR E PROCESSAR bodySintomas
+        if (!bodySintomas || !Array.isArray(bodySintomas)) {
+            console.log("⚠️ bodySintomas não é array, convertendo para array vazio");
+            bodySintomas = [];
+        }
+
+        console.log("✅ bodySintomas após validação:", bodySintomas);
+
+        // 5. PROCESSAR DESCRIÇÃO COM OPENAI (SE HOUVER)
+        if (descricao && descricao.trim().length > 0) {
+            console.log("🤖 Processando descrição com OpenAI...");
+            console.log("📝 Descrição:", descricao);
+            
+            try {
+                const sintomasOpenAI = await llm_conect(descricao);
+                console.log("🤖 Sintomas retornados pela OpenAI:", sintomasOpenAI);
+                
+                // Combinar sintomas existentes com os da OpenAI
+                bodySintomas = [...bodySintomas, ...sintomasOpenAI];
+                console.log("🤖 Sintomas combinados:", bodySintomas);
+            } catch (openaiError) {
+                console.error("❌ Erro na OpenAI:", openaiError.message);
+                // Continua sem os sintomas da OpenAI
+            }
+        }
+
+        console.log("🔍 Sintomas finais para processamento:", bodySintomas);
+
+        // 6. VALIDAR SE HÁ SINTOMAS PARA PROCESSAR
+        if (bodySintomas.length === 0) {
+            console.log("⚠️ Nenhum sintoma identificado para processamento");
+            
+            // Mesmo sem sintomas, criamos a consulta para o médico analisar
+            console.log("📋 Criando consulta básica...");
+            const novaConsulta = new Consultas({
+                paciente: pacienteId,
+                data_hora: new Date(),
+                status: 'preliminar', // ← CORREÇÃO: usar 'preliminar'
+                resultado: descricao || "Sem descrição fornecida",
+                notas: "Consulta criada sem sintomas identificados - análise manual necessária"
+            });
+
+            await novaConsulta.save();
+            
+            return res.status(200).json({
+                message: "Consulta registrada. Descreva seus sintomas com mais detalhes para uma análise mais precisa.",
+                data: [],
+                consultaId: novaConsulta._id,
+                metadata: {
+                    sintomasPesquisados: 0,
+                    doencasEncontradas: 0,
+                    consultaCriada: true,
+                    status: 'preliminar'
+                }
+            });
+        }
+
+        // 7. CONVERTER IDs PARA ObjectId E FILTRAR INVÁLIDOS
+        console.log("🔄 Convertendo IDs para ObjectId...");
+        const sintomasConsultaIds = bodySintomas.map(id => {
+            try {
+                return new ObjectId(id);
+            } catch (error) {
+                console.warn(`⚠️ ID inválido ignorado: ${id}`, error.message);
+                return null;
+            }
+        }).filter(id => id !== null);
+
+        console.log("✅ IDs válidos após conversão:", sintomasConsultaIds.length);
+        console.log("📋 IDs:", sintomasConsultaIds);
+
+        if (sintomasConsultaIds.length === 0) {
+            console.log("⚠️ Nenhum ID de sintoma válido após conversão");
+            
+            // Criar consulta mesmo sem sintomas válidos
+            const novaConsulta = new Consultas({
+                paciente: pacienteId,
+                data_hora: new Date(),
+                status: 'preliminar', // ← CORREÇÃO
+                resultado: descricao || "Sem descrição",
+                notas: "Sintomas fornecidos não correspondem a sintomas válidos no sistema"
+            });
+
+            await novaConsulta.save();
+            
+            return res.status(200).json({
+                message: "Consulta registrada. Os sintomas fornecidos não correspondem ao sistema.",
+                data: [],
+                consultaId: novaConsulta._id,
+                metadata: {
+                    sintomasPesquisados: bodySintomas.length,
+                    sintomasValidos: 0,
+                    doencasEncontradas: 0,
+                    consultaCriada: true,
+                    status: 'preliminar'
+                }
+            });
+        }
+
+        // 8. CRIAR CONSULTA NO BANCO DE DADOS
+        console.log("📋 Criando consulta no banco...");
+        const novaConsulta = new Consultas({
+            paciente: pacienteId,
+            data_hora: new Date(),
+            status: 'preliminar', // ← CORREÇÃO
+            resultado: descricao || "Consulta via auto-diagnóstico",
+            notas: `Consulta com ${sintomasConsultaIds.length} sintomas identificados`
+        });
+
+        await novaConsulta.save();
+        console.log("✅ Consulta criada com ID:", novaConsulta._id);
+
+        // 9. ASSOCIAR SINTOMAS À CONSULTA
+        console.log("🔗 Associando sintomas à consulta...");
+        const associacoes = sintomasConsultaIds.map(sintomaId => ({
+            consulta: novaConsulta._id,
+            sintoma: sintomaId
+        }));
+
+        await ConsultasSintomas.insertMany(associacoes);
+        console.log("✅", associacoes.length, "sintomas associados à consulta");
+
+        // 10. CALCULAR DIAGNÓSTICO (AGREGAÇÃO)
+        console.log("🧮 Calculando diagnóstico...");
         const calculus = await Doencas.aggregate([
+            // 1. Converter sintomas para ObjectId se necessário
             {
                 $addFields: {
                     sintomasConvertidos: {
@@ -610,6 +737,8 @@ async function make_consulta(req, res, next) {
                     }
                 }
             },
+            
+            // 2. Calcular sintomas comuns
             {
                 $addFields: {
                     sintomasComunsIds: {
@@ -617,6 +746,8 @@ async function make_consulta(req, res, next) {
                     }
                 }
             },
+            
+            // 3. Calcular porcentagem de compatibilidade
             {
                 $addFields: {
                     compatibilidade: {
@@ -639,9 +770,10 @@ async function make_consulta(req, res, next) {
                 }
             },
 
+            // 4. Filtrar doenças com alguma compatibilidade
             { $match: { compatibilidade: { $gt: 0 } } },
 
-            // Nomes dos sintomas da doença
+            // 5. Buscar NOMES dos sintomas da doença
             {
                 $lookup: {
                     from: "sintomas",
@@ -650,11 +782,22 @@ async function make_consulta(req, res, next) {
                         { $match: { $expr: { $in: ["$_id", "$$sintomasIds"] } } },
                         { $project: { _id: 0, nome: 1 } }
                     ],
-                    as: "sintomasDoenca"
+                    as: "sintomasDoencaNomes"
+                }
+            },
+            {
+                $addFields: {
+                    sintomasDoencaNomes: {
+                        $map: {
+                            input: "$sintomasDoencaNomes",
+                            as: "s",
+                            in: "$$s.nome"
+                        }
+                    }
                 }
             },
 
-            // Nomes dos sintomas comuns
+            // 6. Buscar NOMES dos sintomas comuns
             {
                 $lookup: {
                     from: "sintomas",
@@ -663,11 +806,22 @@ async function make_consulta(req, res, next) {
                         { $match: { $expr: { $in: ["$_id", "$$sintomasComunsIds"] } } },
                         { $project: { _id: 0, nome: 1 } }
                     ],
-                    as: "sintomasComuns"
+                    as: "sintomasComunsNomes"
+                }
+            },
+            {
+                $addFields: {
+                    sintomasComunsNomes: {
+                        $map: {
+                            input: "$sintomasComunsNomes",
+                            as: "s",
+                            in: "$$s.nome"
+                        }
+                    }
                 }
             },
 
-            // Nomes dos sintomas da consulta
+            // 7. Buscar NOMES dos sintomas da consulta
             {
                 $lookup: {
                     from: "sintomas",
@@ -675,44 +829,99 @@ async function make_consulta(req, res, next) {
                         { $match: { _id: { $in: sintomasConsultaIds } } },
                         { $project: { _id: 0, nome: 1 } }
                     ],
-                    as: "sintomasConsulta"
+                    as: "sintomasConsultaNomes"
+                }
+            },
+            {
+                $addFields: {
+                    sintomasConsultaNomes: {
+                        $map: {
+                            input: "$sintomasConsultaNomes",
+                            as: "s",
+                            in: "$$s.nome"
+                        }
+                    }
                 }
             },
 
+            // 8. Projetar resultado final
             {
                 $project: {
                     _id: 1,
                     doenca: "$nome",
                     porcentagem: "$compatibilidade",
-                    sintomasDoenca: "$sintomasDoenca.nome",
-                    sintomasConsulta: "$sintomasConsulta.nome",
-                    sintomasComuns: "$sintomasComuns.nome",
+                    sintomasDoenca: "$sintomasDoencaNomes",
+                    sintomasConsulta: "$sintomasConsultaNomes",
+                    sintomasComuns: "$sintomasComunsNomes",
                     sintomasFaltantes: {
-                        $setDifference: ["$sintomasDoenca.nome", "$sintomasComuns.nome"]
+                        $setDifference: ["$sintomasDoencaNomes", "$sintomasComunsNomes"]
                     }
                 }
             },
 
+            // 9. Ordenar por compatibilidade e limitar
             { $sort: { porcentagem: -1 } },
             { $limit: 15 }
         ]);
 
-        // =====================================================
-        // 6️⃣ Resposta
-        // =====================================================
+        console.log("✅ Diagnóstico calculado. Doenças encontradas:", calculus.length);
+
+        // 11. ATUALIZAR CONSULTA COM RESULTADOS DO DIAGNÓSTICO
+        if (calculus.length > 0) {
+            const resultadoDiagnostico = calculus.map(d => ({
+                doenca: d.doenca,
+                porcentagem: d.porcentagem,
+                sintomasComuns: d.sintomasComuns,
+                sintomasFaltantes: d.sintomasFaltantes
+            }));
+            
+            await Consultas.findByIdAndUpdate(novaConsulta._id, {
+                $set: {
+                    'diagnostico_auto': resultadoDiagnostico,
+                    'notas': `Análise automática: ${calculus.length} doenças possíveis identificadas. Compatibilidade de ${calculus[0]?.porcentagem?.toFixed(1) || 0}% com ${calculus[0]?.doenca || 'nenhuma doença'}`
+                }
+            });
+            console.log("📊 Diagnóstico salvo na consulta");
+        }
+
+        // 12. PREPARAR RESPOSTA FINAL
+        console.log("🎉 Processo completo concluído com sucesso!");
+        
         return res.status(200).json({
-            message: "Cálculo feito com sucesso!",
+            message: "Consulta criada com sucesso! Diagnóstico preliminar gerado. Aguarde validação médica.",
             data: calculus,
+            consultaId: novaConsulta._id,
             metadata: {
-                sintomasPesquisados: bodySintomas.length,
-                doencasEncontradas: calculus.length
+                sintomasRecebidos: bodySintomas.length,
+                sintomasValidos: sintomasConsultaIds.length,
+                doencasEncontradas: calculus.length,
+                consultaCriada: true,
+                status: 'preliminar',
+                pacienteId: pacienteId.toString(),
+                pacienteNome: paciente.nome,
+                timestamp: new Date().toISOString()
             }
         });
 
     } catch (err) {
-        console.error("Erro em make_consulta:", err);
-        next(err);
+        console.error("❌ ERRO CRÍTICO em make_consulta:", err);
+        console.error("❌ Stack trace:", err.stack);
+        
+        // Tentar fornecer uma mensagem de erro útil
+        let errorMessage = "Erro ao processar consulta";
+        if (err.name === 'MongoError') {
+            errorMessage = "Erro no banco de dados";
+        } else if (err.name === 'ValidationError') {
+            errorMessage = "Erro de validação: " + err.message;
+        } else if (err.name === 'TypeError') {
+            errorMessage = "Erro de tipo de dados";
+        }
+        
+        return res.status(500).json({
+            message: `${errorMessage}: ${err.message}`,
+            data: null,
+            error: process.env.NODE_ENV === 'development' ? err.message : undefined
+        });
     }
 }
-
 module.exports = { create, list, get, update, remove, approve, cancel, markAsDone, diagnose, getValidatedReports, getConsultaDetails, getPendingConsultas, make_consulta };
